@@ -1,0 +1,104 @@
+name: agent-orchestrator
+
+x-app-env: &app-env
+  DATABASE_URL: postgresql+psycopg://orchestrator:orchestrator@postgres:5432/orchestrator
+  REDIS_URL: redis://redis:6379/0
+  CHECKPOINTER: postgres
+  EVENT_BUS: redis
+  RUN_EXECUTOR: celery
+  VECTOR_STORE: chroma
+  CHROMA_MODE: http
+  CHROMA_HOST: chroma
+  CHROMA_PORT: "8000"
+  LOG_FORMAT: json
+  CORS_ORIGINS: http://localhost:${UI_PORT:-8080}
+
+x-app: &app
+  build:
+    context: .
+    dockerfile: Dockerfile
+  image: agent-orchestrator:latest
+  env_file:
+    - path: .env
+      required: false
+  restart: unless-stopped
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: orchestrator
+      POSTGRES_PASSWORD: orchestrator
+      POSTGRES_DB: orchestrator
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U orchestrator -d orchestrator"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  redis:
+    image: redis:7.4-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  # Chroma server launched from the app image (`chroma run` ships with the chromadb
+  # package), which guarantees the client and server versions always match.
+  chroma:
+    <<: *app
+    command: ["chroma", "run", "--path", "/app/data/chroma", "--host", "0.0.0.0", "--port", "8000"]
+    environment:
+      ANONYMIZED_TELEMETRY: "FALSE"
+    volumes:
+      - chroma-data:/app/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v2/heartbeat', timeout=4)"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  api:
+    <<: *app
+    environment:
+      <<: *app-env
+    ports:
+      - "${API_PORT:-8000}:8000"
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      chroma: { condition: service_healthy }
+
+  worker:
+    <<: *app
+    command: ["celery", "-A", "orchestrator.worker.celery_app", "worker", "--loglevel=INFO", "--concurrency=2", "-Q", "runs"]
+    environment:
+      <<: *app-env
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A orchestrator.worker.celery_app inspect ping -d celery@$$HOSTNAME --timeout 5 || exit 1"]
+      interval: 30s
+      timeout: 15s
+      start_period: 30s
+      retries: 3
+    depends_on:
+      api: { condition: service_healthy }
+
+  frontend:
+    build:
+      context: ./frontend
+    image: agent-orchestrator-ui:latest
+    ports:
+      - "${UI_PORT:-8080}:8080"
+    depends_on:
+      api: { condition: service_healthy }
+    restart: unless-stopped
+
+volumes:
+  postgres-data:
+  chroma-data:
