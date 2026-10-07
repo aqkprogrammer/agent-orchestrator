@@ -14,6 +14,8 @@ It runs fully offline out of the box. A deterministic mock LLM and a hashing emb
 
 ![A supervisor delegates to specialists; a $250 refund and an outbound email were approved by a human before the run completed](docs/screenshots/completed-run.png)
 
+![Tour of the React console: the run list, a risky action paused for human approval, a completed run and long-term memory recall](docs/screenshots/tour.webp)
+
 ---
 
 ## Features
